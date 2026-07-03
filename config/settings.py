@@ -18,6 +18,8 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',
     'corsheaders',
+    'cloudinary_storage',
+    'cloudinary',
     'apps.accounts',
     'apps.cards',
     'apps.superadmin',
@@ -79,3 +81,17 @@ SIMPLE_JWT = {
 SUPERADMIN_LOGIN    = config('SUPERADMIN_LOGIN',    default='admin')
 SUPERADMIN_PASSWORD = config('SUPERADMIN_PASSWORD', default='qrcard2025')
 SUPERADMIN_TOKEN    = config('SUPERADMIN_TOKEN',    default='sa-secret-token')
+
+# ── Cloudinary (медиа в проде) ────────────────────────────
+# Если ключи заданы — загруженные видео уходят в Cloudinary (переживают
+# редеплой + CDN с поддержкой Range для iOS). Иначе — локальный диск (dev).
+CLOUDINARY_CLOUD_NAME = config('CLOUDINARY_CLOUD_NAME', default='')
+CLOUDINARY_API_KEY    = config('CLOUDINARY_API_KEY',    default='')
+CLOUDINARY_API_SECRET = config('CLOUDINARY_API_SECRET', default='')
+USE_CLOUDINARY = bool(CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET)
+if USE_CLOUDINARY:
+    CLOUDINARY_STORAGE = {
+        'CLOUD_NAME': CLOUDINARY_CLOUD_NAME,
+        'API_KEY':    CLOUDINARY_API_KEY,
+        'API_SECRET': CLOUDINARY_API_SECRET,
+    }

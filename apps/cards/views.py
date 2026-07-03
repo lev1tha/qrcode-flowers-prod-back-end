@@ -3,11 +3,18 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.parsers import MultiPartParser
+from django.http import FileResponse, StreamingHttpResponse, HttpResponse, Http404
+from django.conf import settings
 from .models import Card
 from .serializers import CardSerializer
 import qrcode
 import io
 import base64
+import os
+import re
+import mimetypes
+
+MAX_VIDEO_MB = 50
 
 
 class ShopSubscriptionMixin:
@@ -101,15 +108,76 @@ class VideoUploadView(APIView):
 
         # Сохраняем в media/videos/
         from django.core.files.storage import default_storage
-        from django.conf import settings
-        import os
 
         ext      = os.path.splitext(file.name)[1].lower()
         allowed  = {'.mp4', '.mov', '.webm', '.avi'}
         if ext not in allowed:
             return Response({'detail': f'Формат не поддерживается. Разрешены: {", ".join(allowed)}'}, status=400)
 
-        path = default_storage.save(f'videos/{file.name}', file)
-        url  = request.build_absolute_uri(f'{settings.MEDIA_URL}{path}')
+        if file.size > MAX_VIDEO_MB * 1024 * 1024:
+            return Response(
+                {'detail': f'Файл слишком большой ({file.size / 1048576:.1f} МБ). Максимум {MAX_VIDEO_MB} МБ'},
+                status=413,
+            )
+
+        if getattr(settings, 'USE_CLOUDINARY', False):
+            # Cloudinary: постоянное хранилище + CDN с Range (переживает редеплой).
+            # resource_type=video обязателен, иначе mp4 зальётся как «изображение».
+            from cloudinary_storage.storage import VideoMediaCloudinaryStorage
+            storage = VideoMediaCloudinaryStorage()
+            path = storage.save(f'videos/{file.name}', file)
+            url  = storage.url(path)  # абсолютный https-URL на CDN
+        else:
+            # Локальный диск (dev). ВНИМАНИЕ: на Railway/Render диск эфемерный.
+            path = default_storage.save(f'videos/{file.name}', file)
+            url  = request.build_absolute_uri(f'{settings.MEDIA_URL}{path}')
 
         return Response({'video_url': url}, status=201)
+
+
+# ── Раздача медиа с поддержкой HTTP Range ─────────────────
+# iOS Safari не проигрывает <video> без byte-range (206 Partial Content),
+# а Django static() отдаёт media только при DEBUG=True. Эта вьюха закрывает оба.
+def _range_iter(path, start, length, chunk=8192):
+    with open(path, 'rb') as f:
+        f.seek(start)
+        remaining = length
+        while remaining > 0:
+            data = f.read(min(chunk, remaining))
+            if not data:
+                break
+            remaining -= len(data)
+            yield data
+
+
+def serve_media(request, path):
+    media_root = os.path.realpath(str(settings.MEDIA_ROOT))
+    full = os.path.realpath(os.path.join(media_root, path))
+    # защита от path traversal (../)
+    if not full.startswith(media_root + os.sep) or not os.path.isfile(full):
+        raise Http404('Не найдено')
+
+    size = os.path.getsize(full)
+    content_type = mimetypes.guess_type(full)[0] or 'application/octet-stream'
+    range_header = request.META.get('HTTP_RANGE', '').strip()
+    m = re.match(r'bytes=(\d+)-(\d*)', range_header) if range_header else None
+
+    if m:
+        start = int(m.group(1))
+        end = int(m.group(2)) if m.group(2) else size - 1
+        end = min(end, size - 1)
+        if start > end or start >= size:
+            resp = HttpResponse(status=416)
+            resp['Content-Range'] = f'bytes */{size}'
+            return resp
+        length = end - start + 1
+        resp = StreamingHttpResponse(_range_iter(full, start, length), status=206, content_type=content_type)
+        resp['Content-Range'] = f'bytes {start}-{end}/{size}'
+        resp['Content-Length'] = str(length)
+    else:
+        resp = FileResponse(open(full, 'rb'), content_type=content_type)
+        resp['Content-Length'] = str(size)
+
+    resp['Accept-Ranges'] = 'bytes'
+    resp['Cache-Control'] = 'public, max-age=86400'
+    return resp

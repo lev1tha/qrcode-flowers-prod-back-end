@@ -162,4 +162,15 @@ CORS_ALLOWED_ORIGINS=https://qr-card-snowy.vercel.app
 SUPERADMIN_LOGIN=admin
 SUPERADMIN_PASSWORD=надёжный-пароль
 SUPERADMIN_TOKEN=случайный-токен-32-символа
+
+# Cloudinary — ОБЯЗАТЕЛЬНО для загруженных видео в проде.
+# Диск на Railway/Render эфемерный: без Cloudinary файлы исчезнут при редеплое.
+# Данные из дашборда Cloudinary → Settings → API Keys.
+CLOUDINARY_CLOUD_NAME=твой-cloud-name
+CLOUDINARY_API_KEY=твой-api-key
+CLOUDINARY_API_SECRET=твой-api-secret
 ```
+
+> Загруженные видео уходят в Cloudinary (постоянное хранилище + CDN с поддержкой
+> Range для iOS). Если переменные не заданы — файлы сохраняются на локальный диск
+> (нормально для разработки, но не для прода). YouTube-ссылки работают всегда.

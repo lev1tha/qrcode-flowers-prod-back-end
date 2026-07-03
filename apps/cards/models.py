@@ -5,11 +5,15 @@ import uuid
 class Card(models.Model):
     """QR-открытка"""
     BACKGROUNDS = [
-        ('hearts',   'Сердечки'),
-        ('snow',     'Снегопад'),
-        ('confetti', 'Конфетти'),
-        ('bubbles',  'Пузырьки'),
-        ('stars',    'Звёзды'),
+        ('hearts',    'Сердечки'),
+        ('snow',      'Снегопад'),
+        ('confetti',  'Конфетти'),
+        ('bubbles',   'Пузырьки'),
+        ('stars',     'Звёзды'),
+        ('petals',    'Лепестки'),
+        ('fireworks', 'Салют'),
+        ('balloons',  'Шарики'),
+        ('gold',      'Золото'),
     ]
 
     id              = models.AutoField(primary_key=True)
