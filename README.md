@@ -1,26 +1,36 @@
 # QR Открытка — Django Backend
 
-## Быстрый старт
+Стек: **Django 6.0 + DRF + PostgreSQL**, поднимается в **Docker**.
+
+## Быстрый старт (Docker)
 
 ```bash
-# 1. Установить зависимости
-pip install -r requirements.txt
-
-# 2. Создать .env файл
-cp .env.example .env
-# отредактировать .env — поменять SECRET_KEY и пароли
-
-# 3. Миграции
-python manage.py migrate
-
-# 4. Начальные данные (мастер-магазин + демо кассир)
-python manage.py seed
-
-# 5. Запуск
-python manage.py runserver
+cp .env.example .env      # заполнить SECRET_KEY, POSTGRES_PASSWORD, SUPERADMIN_*, RUN_SEED=1
+docker compose up -d --build
+# db (postgres:16) + web (gunicorn на 127.0.0.1:8000):
+#   entrypoint сам применит миграции, collectstatic и seed (если RUN_SEED=1)
+docker compose exec web python manage.py createsuperuser   # для /django-admin/
 ```
 
-Бэкенд будет доступен на `http://localhost:8000`
+Полный деплой на VPS (nginx + TLS + frontend) — см. **[DEPLOY.md](DEPLOY.md)**.
+
+## Локально без Docker
+
+```bash
+python3.13 -m venv .venv && ./.venv/bin/pip install -r requirements-dev.txt
+cp .env.example .env       # POSTGRES_HOST=localhost, указать свою локальную БД
+./.venv/bin/python manage.py migrate
+./.venv/bin/python manage.py seed
+./.venv/bin/python manage.py runserver
+```
+
+## Тесты
+
+```bash
+docker compose run --rm --entrypoint sh web -c "pip install -q pytest pytest-django && pytest"
+```
+
+Бэкенд доступен на `http://localhost:8000`
 
 ---
 
@@ -127,50 +137,34 @@ qr-card-backend/
 
 ---
 
-## Аккаунты по умолчанию (после seed)
+## Аккаунты после seed
+
+Логины кассиров создаёт `seed`, пароли задаются через env (`MASTER_PASSWORD`,
+`DEMO_PASSWORD`; дефолты для локалки — `master123` / `cashier123`):
 
 | Роль | Логин | Пароль |
 |------|-------|--------|
-| Кассир мастер-магазина | `master` | `master123` |
-| Кассир демо-магазина | `cashier1` | `cashier123` |
-| Суперадмин панель | `admin` | `qrcard2025` |
+| Кассир мастер-магазина | `master` | `$MASTER_PASSWORD` |
+| Кассир демо-магазина | `cashier1` | `$DEMO_PASSWORD` |
+| Панель суперадмина | `$SUPERADMIN_LOGIN` | `$SUPERADMIN_PASSWORD` |
+
+> Django-суперпользователь (`/django-admin/`) намеренно **не** создаётся seed'ом —
+> заведите его отдельно: `python manage.py createsuperuser`.
 
 ---
 
 ## Подключение фронтенда
 
-В `qr-card-v5/.env.local`:
-```
-VITE_API_URL=http://localhost:8000
-```
-
-В `src/api/client.js`:
-```js
-const USE_MOCK = false  // было true
-```
+В `.env.local` фронтенда: `VITE_API_URL` = адрес бэкенда (локально `http://localhost:8000`,
+в проде — тот же домен, что и фронт: same-origin `/api`).
 
 ---
 
-## Деплой на Railway / Render
+## Деплой
 
-```bash
-# Переменные окружения на сервере:
-SECRET_KEY=длинная-случайная-строка
-DEBUG=False
-ALLOWED_HOSTS=your-app.railway.app
-CORS_ALLOWED_ORIGINS=https://qr-card-snowy.vercel.app
-SUPERADMIN_LOGIN=admin
-SUPERADMIN_PASSWORD=надёжный-пароль
-SUPERADMIN_TOKEN=случайный-токен-32-символа
+Видео хранится на **локальном диске** (`/media`, том Docker) и раздаётся nginx с
+поддержкой Range для iOS. Cloudinary больше не используется.
 
-# Cloudinary — ОБЯЗАТЕЛЬНО для загруженных видео в проде.
-# Диск на Railway/Render эфемерный: без Cloudinary файлы исчезнут при редеплое.
-# Данные из дашборда Cloudinary → Settings → API Keys.
-CLOUDINARY_CLOUD_NAME=твой-cloud-name
-CLOUDINARY_API_KEY=твой-api-key
-CLOUDINARY_API_SECRET=твой-api-secret
-```
-
-> Загруженные видео уходят в Cloudinary (постоянное хранилище + CDN с поддержкой
-> Range для iOS). Если переменные не заданы — файлы сохраняются на локальный диск
-> (нормально для разработки, но не для прода). YouTube-ссылки работают всегда.
+Полная инструкция по VPS (Docker backend + Vite frontend + nginx + certbot) —
+**[DEPLOY.md](DEPLOY.md)**. Ключевые env: `SECRET_KEY`, `DEBUG=False`,
+`ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`, `POSTGRES_*`, `SUPERADMIN_*`.

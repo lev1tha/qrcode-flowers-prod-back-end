@@ -1,0 +1,18 @@
+[Unit]
+Description=QR Card frontend (Vite dev server)
+After=network.target
+
+[Service]
+Type=simple
+# ── ПОДСТАВЬ ПОД СВОЙ VPS ──────────────────────────────────
+User=deploy
+WorkingDirectory=/srv/qrcard/frontend
+# npm должен быть в PATH; при nvm укажи полный путь до npm.
+ExecStart=/usr/bin/npm run dev
+Restart=always
+RestartSec=3
+# .env.local в каталоге фронта задаёт VITE_API_URL и VITE_PUBLIC_HOST.
+Environment=NODE_ENV=development
+
+[Install]
+WantedBy=multi-user.target

@@ -120,17 +120,10 @@ class VideoUploadView(APIView):
                 status=413,
             )
 
-        if getattr(settings, 'USE_CLOUDINARY', False):
-            # Cloudinary: постоянное хранилище + CDN с Range (переживает редеплой).
-            # resource_type=video обязателен, иначе mp4 зальётся как «изображение».
-            from cloudinary_storage.storage import VideoMediaCloudinaryStorage
-            storage = VideoMediaCloudinaryStorage()
-            path = storage.save(f'videos/{file.name}', file)
-            url  = storage.url(path)  # абсолютный https-URL на CDN
-        else:
-            # Локальный диск (dev). ВНИМАНИЕ: на Railway/Render диск эфемерный.
-            path = default_storage.save(f'videos/{file.name}', file)
-            url  = request.build_absolute_uri(f'{settings.MEDIA_URL}{path}')
+        # Локальный диск VPS (постоянный). В проде /media/ раздаёт nginx с Range;
+        # serve_media остаётся fallback для локальной разработки.
+        path = default_storage.save(f'videos/{file.name}', file)
+        url  = request.build_absolute_uri(f'{settings.MEDIA_URL}{path}')
 
         return Response({'video_url': url}, status=201)
 
