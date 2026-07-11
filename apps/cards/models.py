@@ -14,6 +14,12 @@ class Card(models.Model):
         ('fireworks', 'Салют'),
         ('balloons',  'Шарики'),
         ('gold',      'Золото'),
+        ('butterflies', 'Бабочки'),
+        ('lanterns',    'Фонарики'),
+        ('aurora',      'Сияние'),
+        ('autumn',      'Листопад'),
+        ('rain',        'Дождь'),
+        ('bokeh',       'Боке'),
     ]
 
     id              = models.AutoField(primary_key=True)
