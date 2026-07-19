@@ -21,6 +21,7 @@ INSTALLED_APPS = [
     'apps.accounts',
     'apps.cards',
     'apps.superadmin',
+    'apps.techcards',
 ]
 
 MIDDLEWARE = [
@@ -43,17 +44,26 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 # ── PostgreSQL ────────────────────────────────────────────
 # HOST=db в docker-compose; для локального запуска — localhost.
-DATABASES = {
-    'default': {
-        'ENGINE':   'django.db.backends.postgresql',
-        'NAME':     config('POSTGRES_DB',       default='qrcard'),
-        'USER':     config('POSTGRES_USER',     default='qrcard'),
-        'PASSWORD': config('POSTGRES_PASSWORD', default=''),
-        'HOST':     config('POSTGRES_HOST',     default='db'),
-        'PORT':     config('POSTGRES_PORT',     default='5432'),
-        'CONN_MAX_AGE': config('DB_CONN_MAX_AGE', default=60, cast=int),
+# USE_SQLITE=1 — локальная разработка/тесты без Postgres (в прод не включать).
+if config('USE_SQLITE', default=False, cast=bool):
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME':   BASE_DIR / 'db.sqlite3',
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE':   'django.db.backends.postgresql',
+            'NAME':     config('POSTGRES_DB',       default='qrcard'),
+            'USER':     config('POSTGRES_USER',     default='qrcard'),
+            'PASSWORD': config('POSTGRES_PASSWORD', default=''),
+            'HOST':     config('POSTGRES_HOST',     default='db'),
+            'PORT':     config('POSTGRES_PORT',     default='5432'),
+            'CONN_MAX_AGE': config('DB_CONN_MAX_AGE', default=60, cast=int),
+        }
+    }
 
 AUTH_USER_MODEL = 'accounts.User'
 LANGUAGE_CODE = 'ru-ru'

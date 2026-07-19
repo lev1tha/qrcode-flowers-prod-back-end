@@ -13,7 +13,7 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model  = User
-        fields = ['id', 'username', 'role', 'shop', 'shop_name', 'shop_active']
+        fields = ['id', 'username', 'role', 'shop', 'shop_name', 'shop_active', 'is_tech_admin']
 
     def get_shop_active(self, obj):
         if not obj.shop:

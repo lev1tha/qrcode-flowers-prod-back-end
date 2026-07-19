@@ -67,6 +67,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     shop       = models.ForeignKey(Shop, on_delete=models.CASCADE,
                                    related_name='users', null=True, blank=True)
     role       = models.CharField(max_length=20, choices=ROLES, default=ROLE_CASHIER)
+    # Доступ к техкартам и финансам производства (/api/tech-cards/)
+    is_tech_admin = models.BooleanField(default=False)
     is_active  = models.BooleanField(default=True)
     is_staff   = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
