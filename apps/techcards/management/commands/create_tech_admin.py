@@ -3,7 +3,7 @@ python manage.py create_tech_admin
 
 Создаёт (или обновляет) администратора производства для раздела техкарт:
   - магазин (по имени, по умолчанию «Balday») с долгой подпиской;
-  - пользователя с is_tech_admin=True.
+  - пользователя с ролью tech_admin.
 
 Креды берутся из окружения TECH_ADMIN_LOGIN / TECH_ADMIN_PASSWORD
 (fallback — значения для локальной разработки, как в seed.py).
@@ -41,15 +41,15 @@ class Command(BaseCommand):
 
         user, user_created = User.objects.get_or_create(
             username=opts['username'],
-            defaults={'shop': shop, 'role': User.ROLE_ADMIN},
+            defaults={'shop': shop, 'role': User.ROLE_TECH_ADMIN},
         )
         user.shop = user.shop or shop
-        user.role = User.ROLE_ADMIN
-        user.is_tech_admin = True
+        user.role = User.ROLE_TECH_ADMIN
         user.set_password(opts['password'])
-        user.save()
+        user.save()  # save() сам выставит is_tech_admin по роли
 
         self.stdout.write(self.style.SUCCESS(
             f'{"Создан" if user_created else "Обновлён"} тех-админ «{user.username}» '
-            f'→ магазин «{user.shop.name}»{" (новый)" if shop_created else ""}'
+            f'(роль {user.role}) → магазин «{user.shop.name}»'
+            f'{" (новый)" if shop_created else ""}'
         ))

@@ -10,9 +10,12 @@ class ShopAdmin(admin.ModelAdmin):
 
 @admin.register(User)
 class UserAdmin(BaseUserAdmin):
-    list_display   = ['username', 'shop', 'role', 'is_active']
-    list_filter    = ['role', 'is_active']
+    list_display   = ['username', 'shop', 'role', 'is_tech_admin', 'is_active']
+    list_filter    = ['role', 'is_tech_admin', 'is_active']
     search_fields  = ['username']
     fieldsets      = None
     add_fieldsets  = None
-    fields         = ['username', 'password', 'shop', 'role', 'is_active', 'is_staff']
+    fields         = ['username', 'password', 'shop', 'role',
+                      'is_tech_admin', 'is_active', 'is_staff']
+    # Роль tech_admin сама включает is_tech_admin (User.save), поэтому руками
+    # флаг нужен только чтобы выдать доступ менеджеру, не меняя ему роль.

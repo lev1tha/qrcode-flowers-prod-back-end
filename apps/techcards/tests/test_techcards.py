@@ -186,3 +186,48 @@ def test_cascade_raw_delete_cleans_recipes(tech_api, tech_admin):
     r = tech_api.get(f'{BASE}semi/{semi_id}/')
     assert r.status_code == 200
     assert r.json()['ingredients'] == []
+
+
+# ── Роль tech_admin ───────────────────────────────────────
+
+@pytest.fixture
+def role_tech_api(active_shop):
+    """Тех-админ по РОЛИ, без ручной установки is_tech_admin."""
+    user = User.objects.create_user(
+        username='roletech', password='pass12345',
+        shop=active_shop, role=User.ROLE_TECH_ADMIN,
+    )
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(user).access_token}')
+    return client
+
+
+def test_role_tech_admin_allowed(role_tech_api):
+    """Роли tech_admin достаточно для доступа — флаг руками не нужен."""
+    assert role_tech_api.get(BASE).status_code == 200
+
+
+def test_role_tech_admin_syncs_flag(active_shop):
+    """save() выставляет is_tech_admin по роли — фронт читает его из логина."""
+    user = User.objects.create_user(
+        username='syncme', password='pass12345',
+        shop=active_shop, role=User.ROLE_TECH_ADMIN,
+    )
+    user.refresh_from_db()
+    assert user.is_tech_admin is True
+    assert user.has_tech_access is True
+
+
+def test_legacy_flag_still_grants_access(tech_admin):
+    """Старая схема (role=admin + флаг) продолжает работать."""
+    assert tech_admin.role == 'admin'
+    assert tech_admin.has_tech_access is True
+
+
+def test_tech_admin_without_shop_denied(active_shop):
+    """Роль без магазина доступа не даёт — данные скоупятся по shop."""
+    user = User.objects.create_user(
+        username='noshop', password='pass12345', role=User.ROLE_TECH_ADMIN)
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(user).access_token}')
+    assert client.get(BASE).status_code == 403

@@ -59,15 +59,23 @@ class Shop(models.Model):
 
 class User(AbstractBaseUser, PermissionsMixin):
     """Кассир / сотрудник магазина"""
-    ROLE_CASHIER = 'cashier'
-    ROLE_ADMIN   = 'admin'     # менеджер магазина
-    ROLES = [(ROLE_CASHIER, 'Кассир'), (ROLE_ADMIN, 'Менеджер')]
+    ROLE_CASHIER    = 'cashier'
+    ROLE_ADMIN      = 'admin'        # менеджер магазина
+    ROLE_TECH_ADMIN = 'tech_admin'   # технолог / финансы производства
+    ROLES = [
+        (ROLE_CASHIER,    'Кассир'),
+        (ROLE_ADMIN,      'Менеджер'),
+        (ROLE_TECH_ADMIN, 'Тех. админ'),
+    ]
 
     username   = models.CharField(max_length=150, unique=True)
     shop       = models.ForeignKey(Shop, on_delete=models.CASCADE,
                                    related_name='users', null=True, blank=True)
     role       = models.CharField(max_length=20, choices=ROLES, default=ROLE_CASHIER)
-    # Доступ к техкартам и финансам производства (/api/tech-cards/)
+    # Денормализованный флаг доступа к техкартам (/api/tech-cards/).
+    # Историческая схема: раньше доступ давал только он, роли не было.
+    # Теперь ведущая — role, а флаг держим синхронным (см. save) ради
+    # фронта, который читает user.is_tech_admin из ответа логина.
     is_tech_admin = models.BooleanField(default=False)
     is_active  = models.BooleanField(default=True)
     is_staff   = models.BooleanField(default=False)
@@ -83,3 +91,19 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return f'{self.username} ({self.shop})'
+
+    @property
+    def has_tech_access(self):
+        """
+        Доступ к техкартам. Роль ИЛИ legacy-флаг: до появления роли
+        тех-админов заводили как role=admin + is_tech_admin=True,
+        такие учётки должны продолжать работать.
+        """
+        return self.role == self.ROLE_TECH_ADMIN or self.is_tech_admin
+
+    def save(self, *args, **kwargs):
+        # Роль tech_admin всегда подразумевает флаг. Обратное не верно:
+        # флаг без роли не сбрасываем, чтобы не отобрать доступ у legacy-учёток.
+        if self.role == self.ROLE_TECH_ADMIN:
+            self.is_tech_admin = True
+        super().save(*args, **kwargs)

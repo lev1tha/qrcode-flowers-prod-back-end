@@ -1,8 +1,9 @@
 """
 API техкарт: /api/tech-cards/
 
-Доступ — только пользователь с is_tech_admin=True (администратор
-производства). Кассирам и менеджерам магазина раздел закрыт.
+Доступ — только пользователь с ролью tech_admin (администратор
+производства); legacy-учётки с флагом is_tech_admin тоже пускаем.
+Кассирам и менеджерам магазина раздел закрыт.
 Все данные скоупятся по магазину пользователя.
 """
 from rest_framework import generics
@@ -22,7 +23,7 @@ class IsTechAdmin(BasePermission):
 
     def has_permission(self, request, view):
         u = request.user
-        return bool(u and u.is_authenticated and u.is_tech_admin and u.shop_id)
+        return bool(u and u.is_authenticated and u.has_tech_access and u.shop_id)
 
 
 class ShopScopedMixin:

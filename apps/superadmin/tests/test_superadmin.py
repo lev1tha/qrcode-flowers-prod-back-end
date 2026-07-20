@@ -62,3 +62,39 @@ def test_master_shop_cannot_be_deleted(api, sa, master_shop):
 def test_master_shop_cannot_be_disabled(api, sa, master_shop):
     r = api.patch(f'{SHOPS}{master_shop.id}/', {'active': False}, format='json', **sa)
     assert r.status_code == 400
+
+
+# ── Роли ──────────────────────────────────────────────────
+
+def test_create_user_with_tech_admin_role(api, sa, active_shop):
+    """Суперадмин может завести технолога."""
+    r = api.post(f'{SHOPS}{active_shop.id}/users/',
+                 {'username': 'tech1', 'password': 'pass12345', 'role': 'tech_admin'},
+                 format='json', **sa)
+    assert r.status_code == 201
+    assert r.json()['role'] == 'tech_admin'
+    assert r.json()['is_tech_admin'] is True
+
+
+def test_promote_existing_user_to_tech_admin(api, sa, cashier):
+    r = api.patch(f'/api/superadmin/users/{cashier.id}/',
+                  {'role': 'tech_admin'}, format='json', **sa)
+    assert r.status_code == 200
+    assert r.json()['role'] == 'tech_admin'
+    cashier.refresh_from_db()
+    assert cashier.has_tech_access is True
+
+
+def test_create_user_rejects_unknown_role(api, sa, active_shop):
+    r = api.post(f'{SHOPS}{active_shop.id}/users/',
+                 {'username': 'bogus', 'password': 'pass12345', 'role': 'wizard'},
+                 format='json', **sa)
+    assert r.status_code == 400
+
+
+def test_patch_rejects_unknown_role(api, sa, cashier):
+    r = api.patch(f'/api/superadmin/users/{cashier.id}/',
+                  {'role': 'wizard'}, format='json', **sa)
+    assert r.status_code == 400
+    cashier.refresh_from_db()
+    assert cashier.role == 'cashier'

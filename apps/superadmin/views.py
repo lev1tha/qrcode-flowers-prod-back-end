@@ -2,7 +2,6 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny, BasePermission
-from rest_framework_simplejwt.tokens import RefreshToken
 from django.conf import settings
 from django.utils import timezone
 from datetime import timedelta
@@ -123,6 +122,19 @@ class ShopDetailView(APIView):
 
 # ── Users (кассиры) ───────────────────────────────────────
 
+VALID_ROLES = {r[0] for r in User.ROLES}
+
+
+def role_error(role):
+    """None если роль валидна, иначе готовый 400-Response."""
+    if role in VALID_ROLES:
+        return None
+    return Response(
+        {'detail': f'Недопустимая роль «{role}». Доступны: {", ".join(sorted(VALID_ROLES))}'},
+        status=400,
+    )
+
+
 class ShopUsersView(APIView):
     """GET / POST /api/superadmin/shops/{id}/users/"""
     permission_classes = [IsSuperAdmin]
@@ -143,6 +155,9 @@ class ShopUsersView(APIView):
 
         if not username or not password:
             return Response({'detail': 'username и password обязательны'}, status=400)
+
+        if err := role_error(role):
+            return err
 
         if User.objects.filter(username=username).exists():
             return Response({'detail': 'Пользователь уже существует'}, status=400)
@@ -170,6 +185,8 @@ class UserDetailView(APIView):
         if 'is_active' in request.data:
             user.is_active = request.data['is_active']
         if 'role' in request.data:
+            if err := role_error(request.data['role']):
+                return err
             user.role = request.data['role']
         user.save()
         return Response(UserSerializer(user).data)
