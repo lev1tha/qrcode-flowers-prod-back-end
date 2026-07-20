@@ -98,6 +98,19 @@ cd /srv/qrcard/backend  && git pull && docker compose up -d --build
 cd /srv/qrcard/frontend && git pull && npm install && sudo systemctl restart qrcard-frontend
 ```
 
+> **`npm install` и рестарт пропускать нельзя — сбой будет тихим.**
+> Если `git pull` меняет `vite.config.js` (например, добавился плагин), Vite пытается
+> перезапуститься сам. При отсутствующей зависимости он пишет в журнал
+> `Cannot find package … / server restart failed` и **оставляет работать старый
+> процесс со старым конфигом**. Сайт не падает — он отдаёт новые исходники, собранные
+> по прежнему конфигу. Так в июле 2026 отвалились Tailwind-стили: страница техкарт
+> рендерилась голым HTML, остальные страницы (инлайн-стили) выглядели нормально.
+> Проверка после деплоя:
+> ```bash
+> systemctl status qrcard-frontend                     # время старта = момент деплоя
+> journalctl -u qrcard-frontend -n 30 | grep -i "restart failed\|Cannot find"
+> ```
+
 ## Бэкап БД
 ```bash
 cd /srv/qrcard/backend
