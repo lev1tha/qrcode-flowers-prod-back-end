@@ -59,14 +59,24 @@ class Shop(models.Model):
 
 class User(AbstractBaseUser, PermissionsMixin):
     """Кассир / сотрудник магазина"""
-    ROLE_CASHIER    = 'cashier'
-    ROLE_ADMIN      = 'admin'        # менеджер магазина
-    ROLE_TECH_ADMIN = 'tech_admin'   # технолог / финансы производства
+    ROLE_CASHIER     = 'cashier'
+    ROLE_ADMIN       = 'admin'         # менеджер магазина
+    ROLE_TECH_ADMIN  = 'tech_admin'    # технолог / финансы производства — видит всё
+    # Роли цеха (модель 1С): каждая видит только свой участок.
+    ROLE_STOREKEEPER = 'storekeeper'   # складовщик / закупщик: сырьё и приход
+    ROLE_PRODUCTION  = 'production'    # цех: только выпуск продукции
+    ROLE_SELLER      = 'seller'        # продавец: продажи и остатки готовой
     ROLES = [
-        (ROLE_CASHIER,    'Кассир'),
-        (ROLE_ADMIN,      'Менеджер'),
-        (ROLE_TECH_ADMIN, 'Тех. админ'),
+        (ROLE_CASHIER,     'Кассир'),
+        (ROLE_ADMIN,       'Менеджер'),
+        (ROLE_TECH_ADMIN,  'Тех. админ'),
+        (ROLE_STOREKEEPER, 'Складовщик / закупщик'),
+        (ROLE_PRODUCTION,  'Производство / цех'),
+        (ROLE_SELLER,      'Продавец'),
     ]
+
+    # Роли, которым открыт раздел цеха (каждой — свой набор вкладок).
+    WORKSHOP_ROLES = (ROLE_TECH_ADMIN, ROLE_STOREKEEPER, ROLE_PRODUCTION, ROLE_SELLER)
 
     username   = models.CharField(max_length=150, unique=True)
     shop       = models.ForeignKey(Shop, on_delete=models.CASCADE,
@@ -100,6 +110,11 @@ class User(AbstractBaseUser, PermissionsMixin):
         такие учётки должны продолжать работать.
         """
         return self.role == self.ROLE_TECH_ADMIN or self.is_tech_admin
+
+    @property
+    def in_workshop(self):
+        """Пускать ли пользователя в раздел цеха вообще (какие вкладки — решают permissions)."""
+        return self.has_tech_access or self.role in self.WORKSHOP_ROLES
 
     def save(self, *args, **kwargs):
         # Роль tech_admin всегда подразумевает флаг. Обратное не верно:

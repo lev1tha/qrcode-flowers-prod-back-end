@@ -146,31 +146,46 @@ def test_production_freezes_unit_cost(tech_api, flour, cake):
     assert hist[0]['unitCost'] == pytest.approx(12.0)
 
 
-def test_production_rejects_insufficient_stock(tech_api, flour, cake):
-    """Склад в минус не уходит, и в ошибке видно, чего не хватает."""
-    tech_api.post(RECEIPTS, {'raw_id': flour.id, 'quantity': 1}, format='json')
+def test_production_allows_negative_stock(tech_api, flour, cake):
+    """
+    Нехватка сырья не блокирует выпуск (как «списание при отсутствии
+    остатков» в 1С): цех не должен стоять из-за непроведённого прихода.
+    """
+    tech_api.post(RECEIPTS, {'raw_id': flour.id, 'quantity': 1}, format='json')  # 1000 гр
     r = tech_api.post(PRODUCTION, {'product_id': cake.id, 'quantity': 10}, format='json')
-    assert r.status_code == 400
-    assert 'Мука' in str(r.json())
+    assert r.status_code == 201
+    # 10 × 200 = 2000 гр при остатке 1000 → минус 1000
+    assert r.json()['stock']['raw'][0]['balance'] == pytest.approx(-1_000)
+    assert r.json()['stock']['products'][0]['balance'] == 10
 
 
-def test_failed_production_changes_nothing(tech_api, flour, cake):
-    """Провалившийся запуск не оставляет ни движений, ни частичных списаний."""
+def test_production_reports_negatives(tech_api, flour, cake):
+    """Минус не блокирует, но возвращается списком — цех видит его после проведения."""
     tech_api.post(RECEIPTS, {'raw_id': flour.id, 'quantity': 1}, format='json')
-    before = StockMovement.objects.count()
-    tech_api.post(PRODUCTION, {'product_id': cake.id, 'quantity': 999}, format='json')
-    assert StockMovement.objects.count() == before
-    assert tech_api.get(STOCK).json()['raw'][0]['balance'] == pytest.approx(1_000)
+    neg = tech_api.post(PRODUCTION, {'product_id': cake.id, 'quantity': 10},
+                        format='json').json()['negatives']
+    assert len(neg) == 1
+    assert neg[0]['name'] == 'Мука'
+    assert neg[0]['required'] == pytest.approx(2_000)
+    assert neg[0]['was'] == pytest.approx(1_000)
+    assert neg[0]['rest'] == pytest.approx(-1_000)
 
 
-def test_production_exactly_drains_stock(tech_api, flour, cake):
-    """Ровно на границе остатка выпуск проходит, а следующая штука — уже нет."""
+def test_production_without_any_stock(tech_api, flour, cake):
+    """Выпуск с нулевого склада проходит — себестоимость всё равно по техкарте."""
+    r = tech_api.post(PRODUCTION, {'product_id': cake.id, 'quantity': 110}, format='json')
+    assert r.status_code == 201
+    assert r.json()['run']['unitCost'] == pytest.approx(12.0)
+    assert r.json()['stock']['raw'][0]['balance'] == pytest.approx(-22_000)
+
+
+def test_production_exact_stock_leaves_no_negatives(tech_api, flour, cake):
+    """Ровно на границе остатка минуса нет."""
     tech_api.post(RECEIPTS, {'raw_id': flour.id, 'quantity': 2, 'unit': 'кг'}, format='json')
-    assert tech_api.post(PRODUCTION, {'product_id': cake.id, 'quantity': 10},
-                         format='json').status_code == 201
+    r = tech_api.post(PRODUCTION, {'product_id': cake.id, 'quantity': 10}, format='json')
+    assert r.status_code == 201
+    assert r.json()['negatives'] == []
     assert tech_api.get(STOCK).json()['raw'][0]['balance'] == pytest.approx(0)
-    assert tech_api.post(PRODUCTION, {'product_id': cake.id, 'quantity': 1},
-                         format='json').status_code == 400
 
 
 def test_production_rejects_zero_quantity(tech_api, flour, cake):
@@ -228,7 +243,7 @@ def test_stock_isolated_between_shops(tech_api, flour, other_shop):
 def test_service_layer_matches_api(active_shop, flour, cake):
     """Сервис и API дают один результат — логика не расходится между слоями."""
     services.receive_raw(active_shop, flour, 5)
-    services.run_production(active_shop, cake, 3)
+    services.run_production(active_shop, cake, 3)   # → (run, negatives)
     snap = services.stock_snapshot(active_shop)
     assert snap['raw'][0]['balance'] == pytest.approx(5_000 - 600)
     assert snap['products'][0]['balance'] == 3

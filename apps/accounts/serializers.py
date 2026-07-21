@@ -8,12 +8,15 @@ class LoginSerializer(serializers.Serializer):
 
 
 class UserSerializer(serializers.ModelSerializer):
+    # in_workshop: пускать ли в раздел цеха вообще (роль решает, какие вкладки).
+    in_workshop = serializers.BooleanField(read_only=True)
     shop_name   = serializers.CharField(source='shop.name',   read_only=True)
     shop_active = serializers.SerializerMethodField()
 
     class Meta:
         model  = User
-        fields = ['id', 'username', 'role', 'shop', 'shop_name', 'shop_active', 'is_tech_admin']
+        fields = ['id', 'username', 'role', 'shop', 'shop_name', 'shop_active',
+                  'is_tech_admin', 'in_workshop']
 
     def get_shop_active(self, obj):
         if not obj.shop:

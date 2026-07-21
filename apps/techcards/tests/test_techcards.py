@@ -173,8 +173,14 @@ def test_overview_returns_all_sections(tech_api, tech_admin):
     assert [x['name'] for x in body['products']] == ['Десерт']
 
 
-def test_cascade_raw_delete_cleans_recipes(tech_api, tech_admin):
-    """Удаление сырья вычищает его из рецептов (CASCADE), сами рецепты живы."""
+def test_raw_delete_keeps_recipes_intact(tech_api, tech_admin):
+    """
+    Удаление сырья мягкое: позиция уходит из справочника, но рецептура,
+    в которой она участвует, остаётся целой и продолжает считаться.
+
+    Раньше здесь был CASCADE и строка рецепта исчезала — из-за чего
+    себестоимость полуфабриката молча падала до нуля.
+    """
     sugar = _sugar(tech_admin.shop)
     r = tech_api.post(f'{BASE}semi/', {
         'name': 'Сироп', 'batchOutput': 500,
@@ -183,9 +189,13 @@ def test_cascade_raw_delete_cleans_recipes(tech_api, tech_admin):
     semi_id = r.json()['id']
 
     assert tech_api.delete(f'{BASE}raw/{sugar.id}/').status_code == 204
-    r = tech_api.get(f'{BASE}semi/{semi_id}/')
-    assert r.status_code == 200
-    assert r.json()['ingredients'] == []
+
+    # из справочника пропало
+    assert [x['id'] for x in tech_api.get(f'{BASE}raw/').json()] == []
+    # но рецепт цел и себестоимость считается
+    body = tech_api.get(f'{BASE}semi/{semi_id}/').json()
+    assert len(body['ingredients']) == 1
+    assert body['ingredients'][0]['ingredientId'] == sugar.id
 
 
 # ── Роль tech_admin ───────────────────────────────────────

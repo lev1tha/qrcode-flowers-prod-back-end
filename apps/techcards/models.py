@@ -9,7 +9,47 @@
 from django.db import models
 
 
-class RawIngredient(models.Model):
+class SoftDeleteQuerySet(models.QuerySet):
+    """
+    Позиции справочников не удаляем физически: на них ссылаются документы,
+    а история обязана остаться правдивой. Помечаем is_deleted и прячем
+    из списков через .live().
+
+    Менеджер по умолчанию отдаёт ВСЁ, включая удалённое: иначе документ
+    прошлого года перестал бы находить свой товар и себестоимость поехала.
+    """
+
+    def live(self):
+        return self.filter(is_deleted=False)
+
+    def soft_delete(self):
+        from django.utils import timezone
+        return self.update(is_deleted=True, deleted_at=timezone.now())
+
+
+class SoftDeleteMixin(models.Model):
+    """Мягкое удаление для справочников (сырьё, товары)."""
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
+    objects = SoftDeleteQuerySet.as_manager()
+
+    class Meta:
+        abstract = True
+
+    def soft_delete(self):
+        from django.utils import timezone
+        self.is_deleted = True
+        self.deleted_at = timezone.now()
+        self.save(update_fields=['is_deleted', 'deleted_at'])
+
+    def restore(self):
+        self.is_deleted = False
+        self.deleted_at = None
+        self.save(update_fields=['is_deleted', 'deleted_at'])
+
+
+class RawIngredient(SoftDeleteMixin):
     """Базовое сырьё: сахар, молоко, сироп манго…"""
     UNITS = [
         ('кг', 'килограмм'),
@@ -64,7 +104,7 @@ class SemiIngredient(models.Model):
         return f'{self.semi.name}: {self.ingredient.name} × {self.quantity}'
 
 
-class FinalProduct(models.Model):
+class FinalProduct(SoftDeleteMixin):
     """Готовый десерт с наценкой и (опционально) ручной ценой."""
     shop           = models.ForeignKey('accounts.Shop', on_delete=models.CASCADE,
                                        related_name='final_products')
@@ -299,9 +339,12 @@ class StockMovement(models.Model):
     shop       = models.ForeignKey('accounts.Shop', on_delete=models.CASCADE,
                                    related_name='stock_movements')
     kind       = models.CharField(max_length=20, choices=KINDS)
-    raw        = models.ForeignKey(RawIngredient, on_delete=models.CASCADE,
+    # PROTECT, а не CASCADE: движение склада — первичный документ.
+    # При CASCADE удаление позиции справочника тихо стирало бы остатки
+    # задним числом, и баланс переставал сходиться с историей.
+    raw        = models.ForeignKey(RawIngredient, on_delete=models.PROTECT,
                                    null=True, blank=True, related_name='movements')
-    product    = models.ForeignKey(FinalProduct, on_delete=models.CASCADE,
+    product    = models.ForeignKey(FinalProduct, on_delete=models.PROTECT,
                                    null=True, blank=True, related_name='movements')
     quantity   = models.FloatField(help_text='Знаковое: приход +, расход −')
     unit_cost  = models.FloatField(default=0, help_text='Себестоимость единицы на момент движения, сом')
@@ -409,6 +452,9 @@ class Operation(models.Model):
     accrual      = models.FloatField(default=0, help_text='Сумма начисления для ОПиУ, сом')
     cash         = models.FloatField(default=0, help_text='Фактическое движение денег для ОДДС, сом')
     method       = models.CharField(max_length=50, blank=True, help_text='Метод оплаты')
+    # Импортированные из Excel строки помечаем, чтобы повторный запуск
+    # import_balday пересоздавал только их и не сносил то, что завели руками.
+    is_imported  = models.BooleanField(default=False)
     created_at   = models.DateTimeField(auto_now_add=True)
 
     class Meta:

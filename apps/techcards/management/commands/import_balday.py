@@ -14,8 +14,8 @@ python manage.py import_balday [--shop Balday] [--year 2026]
 
 Идемпотентна: повторный запуск обновляет справочники и НЕ дублирует
 документы — импортированные накладные и операции удаляются и создаются
-заново. Документы, введённые в системе руками, не трогаются
-(у накладных проверяется is_imported).
+заново. Введённое в интерфейсе не трогается: и накладные, и операции
+фильтруются по is_imported.
 """
 import json
 from collections import defaultdict
@@ -75,6 +75,10 @@ class Command(BaseCommand):
         w = self.stdout.write
         w(f'Импорт в магазин «{shop.name}»…')
 
+        # Схлопываем дубли ПЕРВЫМ шагом: и _nomenclature, и _sales ищут
+        # позицию по имени, и на дублях от прежних прогонов оба падают
+        # с MultipleObjectsReturned.
+        self._dedupe_products(shop)
         types    = self._types(shop, data['operation_types'])
         products = self._nomenclature(shop, data['nomenclature'])
         self._settings(shop, data['settings'])
@@ -107,15 +111,20 @@ class Command(BaseCommand):
 
     # ── Номенклатура ──────────────────────────────────────────
 
+    # Строки-заголовки, случайно попавшие в выгрузку Excel.
+    JUNK_NAMES = {'наименование', 'категория/направление', 'продукт/услуга'}
+
     def _nomenclature(self, shop, rows):
         result = {}
         for r in rows:
-            if not r['name']:
+            if not r['name'] or r['name'].strip().lower() in self.JUNK_NAMES:
                 continue
             # Наценка из цены и себестоимости; без себестоимости оставляем 50 %.
             cost, price = r['unit_cost'], r['price']
             markup = round((price / cost - 1) * 100, 2) if cost > 0 and price > 0 else 50.0
-            obj, _ = FinalProduct.objects.update_or_create(
+            # .live(): менеджер по умолчанию видит и мягко удалённые,
+            # и поиск по имени наткнулся бы на схлопнутый дубль.
+            obj, _ = FinalProduct.objects.live().update_or_create(
                 shop=shop, name=r['name'],
                 defaults={
                     'category': r['category'],
@@ -175,12 +184,15 @@ class Command(BaseCommand):
             for r in items:
                 product = products.get(r['product'])
                 if product is None:
-                    # Позиция продавалась, но в номенклатуре её нет —
-                    # заводим, иначе потеряли бы выручку.
-                    product = FinalProduct.objects.create(
-                        shop=shop, name=r['product'], category=r['direction'],
-                        retail_price=r['price'] or None,
-                        manual_unit_cost=r['unit_cost'] or None)
+                    # Позиция продавалась, но в номенклатуре её нет — заводим,
+                    # иначе потеряли бы выручку. get_or_create, а НЕ create:
+                    # иначе каждый повторный импорт плодил бы копии
+                    # (так и появились 188 дублей до этой правки).
+                    product, _ = FinalProduct.objects.live().get_or_create(
+                        shop=shop, name=r['product'],
+                        defaults={'category': r['direction'],
+                                  'retail_price': r['price'] or None,
+                                  'manual_unit_cost': r['unit_cost'] or None})
                     products[r['product']] = product
                 lines.append(InvoiceLine(
                     invoice=invoice, product=product, quantity=r['qty'],
@@ -191,10 +203,54 @@ class Command(BaseCommand):
         self.stdout.write(f'  продажи: {len(rows)} строк → {created} накладных')
         return created
 
+    # ── Схлопывание дублей ────────────────────────────────────
+
+    def _dedupe_products(self, shop):
+        """
+        Объединяет позиции-однофамильцы, оставляя самую раннюю.
+
+        Документы (накладные, выпуски, движения, списания) перецепляются
+        на канонический товар, дубли уходят в мягкое удаление — физически
+        снести их нельзя, на них стоят PROTECT-ссылки.
+        """
+        from collections import defaultdict
+        from apps.techcards.models import (
+            Disposal, InvoiceLine, ProductComponent, ProductionRun, StockMovement,
+        )
+
+        by_name = defaultdict(list)
+        for p in FinalProduct.objects.filter(shop=shop).live().order_by('id'):
+            by_name[p.name.strip()].append(p)
+
+        merged = 0
+        for name, items in by_name.items():
+            if len(items) < 2:
+                continue
+            keep, dupes = items[0], items[1:]
+            ids = [d.id for d in dupes]
+            InvoiceLine.objects.filter(product_id__in=ids).update(product=keep)
+            ProductionRun.objects.filter(product_id__in=ids).update(product=keep)
+            StockMovement.objects.filter(product_id__in=ids).update(product=keep)
+            Disposal.objects.filter(product_id__in=ids).update(product=keep)
+            ProductComponent.objects.filter(product_id__in=ids).delete()
+            FinalProduct.objects.filter(id__in=ids).soft_delete()
+            merged += len(dupes)
+
+        # Мусорные строки-заголовки из старых прогонов.
+        junk = FinalProduct.objects.filter(
+            shop=shop, name__in=['Наименование', 'Продукт/услуга']).live()
+        junk_n = junk.count()
+        junk.soft_delete()
+
+        if merged or junk_n:
+            self.stdout.write(
+                f'  схлопнуто дублей: {merged}, убрано мусорных строк: {junk_n}')
+
     # ── Операции ──────────────────────────────────────────────
 
     def _operations(self, shop, rows, types):
-        Operation.objects.filter(shop=shop).delete()
+        # Только импортированные: операции, заведённые в интерфейсе, не трогаем.
+        Operation.objects.filter(shop=shop, is_imported=True).delete()
 
         created, skipped = [], 0
         for r in rows:
@@ -206,7 +262,8 @@ class Command(BaseCommand):
                 shop=shop, date=date.fromisoformat(r['date']), op_type=t,
                 counterparty=r['counterparty'][:200],
                 description=r['description'][:300],
-                accrual=r['accrual'], cash=r['cash'], method=r['method'][:50]))
+                accrual=r['accrual'], cash=r['cash'], method=r['method'][:50],
+                is_imported=True))
         Operation.objects.bulk_create(created)
 
         legacy = sum(1 for o in created if o.op_type.is_legacy)

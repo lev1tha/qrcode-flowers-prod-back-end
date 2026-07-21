@@ -6,12 +6,16 @@ API техкарт: /api/tech-cards/
 Кассирам и менеджерам магазина раздел закрыт.
 Все данные скоупятся по магазину пользователя.
 """
+from django.db.models import ProtectedError
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics
 from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.views import APIView
+
+from apps.accounts.models import User
 
 from . import reports, services
 from .models import (
@@ -27,13 +31,50 @@ from .serializers import (
 )
 
 
-class IsTechAdmin(BasePermission):
-    """Только администратор производства, привязанный к магазину."""
-    message = 'Доступ только для администратора производства'
+class RoleRequired(BasePermission):
+    """
+    Ролевой доступ к участку цеха (модель 1С: каждый видит свой участок).
+
+    tech_admin — технолог/финансы — проходит везде: это и есть роль
+    «всё вижу». Остальные пускаются только в перечисленные участки,
+    поэтому цех не дотянется до финансов даже прямым запросом к API.
+    """
+    roles = ()
+    message = 'Нет доступа: недостаточно прав роли'
 
     def has_permission(self, request, view):
         u = request.user
-        return bool(u and u.is_authenticated and u.has_tech_access and u.shop_id)
+        if not (u and u.is_authenticated and u.shop_id):
+            return False
+        if u.has_tech_access:
+            return True
+        return u.role in self.roles
+
+
+class IsTechAdmin(RoleRequired):
+    """Только технолог/финансы: техкарты, отчёты, журнал операций, списания."""
+    roles = ()
+    message = 'Доступ только для администратора производства'
+
+
+class IsWarehouse(RoleRequired):
+    """Складовщик/закупщик: сырьё и приход."""
+    roles = (User.ROLE_STOREKEEPER,)
+
+
+class IsProduction(RoleRequired):
+    """Цех: выпуск продукции."""
+    roles = (User.ROLE_PRODUCTION,)
+
+
+class IsSeller(RoleRequired):
+    """Продавец: продажи и остатки готовой продукции."""
+    roles = (User.ROLE_SELLER,)
+
+
+class IsWorkshopMember(RoleRequired):
+    """Любая роль цеха — для общих справочников (список товаров, склад)."""
+    roles = (User.ROLE_STOREKEEPER, User.ROLE_PRODUCTION, User.ROLE_SELLER)
 
 
 class ShopScopedMixin:
@@ -41,27 +82,62 @@ class ShopScopedMixin:
     permission_classes = [IsTechAdmin]
 
     def get_queryset(self):
-        return self.model.objects.filter(shop=self.request.user.shop)
+        qs = self.model.objects.filter(shop=self.request.user.shop)
+        # Справочники с мягким удалением: в списках показываем только живые.
+        return qs.live() if hasattr(qs, 'live') else qs
 
     def perform_create(self, serializer):
         serializer.save(shop=self.request.user.shop)
 
 
+class SoftDeleteMixin:
+    """
+    DELETE помечает позицию удалённой вместо физического удаления.
+
+    Физическое удаление здесь недопустимо: на справочник ссылаются
+    документы (выпуски, накладные, списания) через PROTECT, и запрос
+    падал бы 500-й; а движения склада до этой правки уносило CASCADE,
+    из-за чего остатки задним числом переставали сходиться.
+    """
+
+    def perform_destroy(self, instance):
+        try:
+            instance.soft_delete()
+        except ProtectedError as e:
+            # Страховка: если кто-то вернёт физическое удаление, отдаём
+            # понятную 400, а не 500 с трейсбеком ORM.
+            raise DRFValidationError({'detail':
+                'Позицию нельзя удалить: на неё ссылаются документы. '
+                f'({e.__class__.__name__})'})
+
+
 class TechCardOverview(APIView):
-    """GET /api/tech-cards/ — весь срез данных одной загрузкой страницы."""
-    permission_classes = [IsTechAdmin]
+    """
+    GET /api/tech-cards/ — срез данных для стартовой загрузки страницы.
+
+    Открыт всем ролям цеха, но состав ответа зависит от роли: рецептуры
+    и сырьё видит только технолог, остальным приходит лишь список товаров.
+    Иначе цех получил бы полный справочник сырья в первом же запросе.
+    """
+    permission_classes = [IsWorkshopMember]
 
     def get(self, request):
         shop = request.user.shop
         ctx  = {'request': request}
+        if not request.user.has_tech_access:
+            products = FinalProduct.objects.filter(shop=shop).live().prefetch_related('components')
+            return Response({
+                'raw': [], 'semi': [],
+                'products': FinalProductSerializer(products, many=True, context=ctx).data,
+            })
         return Response({
             'raw':      RawIngredientSerializer(
-                            RawIngredient.objects.filter(shop=shop), many=True, context=ctx).data,
+                            RawIngredient.objects.filter(shop=shop).live(), many=True, context=ctx).data,
             'semi':     SemiFinishedSerializer(
                             SemiFinished.objects.filter(shop=shop)
                             .prefetch_related('ingredients'), many=True, context=ctx).data,
             'products': FinalProductSerializer(
-                            FinalProduct.objects.filter(shop=shop)
+                            FinalProduct.objects.filter(shop=shop).live()
                             .prefetch_related('components'), many=True, context=ctx).data,
         })
 
@@ -69,11 +145,14 @@ class TechCardOverview(APIView):
 # ── Сырьё ─────────────────────────────────────────────────
 
 class RawListCreateView(ShopScopedMixin, generics.ListCreateAPIView):
+    """Закуп сырья — складовщик."""
+    permission_classes = [IsWarehouse]
     model            = RawIngredient
     serializer_class = RawIngredientSerializer
 
 
-class RawDetailView(ShopScopedMixin, generics.RetrieveUpdateDestroyAPIView):
+class RawDetailView(SoftDeleteMixin, ShopScopedMixin, generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsWarehouse]
     model            = RawIngredient
     serializer_class = RawIngredientSerializer
 
@@ -99,14 +178,23 @@ class SemiDetailView(ShopScopedMixin, generics.RetrieveUpdateDestroyAPIView):
 # ── Готовые десерты ───────────────────────────────────────
 
 class ProductListCreateView(ShopScopedMixin, generics.ListCreateAPIView):
+    """
+    Список товаров читают все роли цеха: цеху он нужен для формы выпуска,
+    продавцу — для накладной. Создавать и править техкарты может только
+    технолог, поэтому право зависит от метода.
+    """
     model            = FinalProduct
     serializer_class = FinalProductSerializer
+
+    def get_permissions(self):
+        cls = IsWorkshopMember if self.request.method in ('GET', 'HEAD') else IsTechAdmin
+        return [cls()]
 
     def get_queryset(self):
         return super().get_queryset().prefetch_related('components')
 
 
-class ProductDetailView(ShopScopedMixin, generics.RetrieveUpdateDestroyAPIView):
+class ProductDetailView(SoftDeleteMixin, ShopScopedMixin, generics.RetrieveUpdateDestroyAPIView):
     model            = FinalProduct
     serializer_class = FinalProductSerializer
 
@@ -117,16 +205,31 @@ class ProductDetailView(ShopScopedMixin, generics.RetrieveUpdateDestroyAPIView):
 # ── Склад и производство ──────────────────────────────────
 
 class StockView(APIView):
-    """GET /api/tech-cards/stock/ — остатки сырья, продукции и суточный потенциал."""
-    permission_classes = [IsTechAdmin]
+    """
+    GET /api/tech-cards/stock/ — срез склада, урезанный под роль.
+
+    Цех не должен видеть общий остаток сырья (по ТЗ), продавец — тем более.
+    Поэтому фильтруем не на фронте, а здесь: иначе данные утекали бы
+    в ответе API независимо от того, что рисует интерфейс.
+    """
+    permission_classes = [IsWorkshopMember]
 
     def get(self, request):
-        return Response(services.stock_snapshot(request.user.shop))
+        u = request.user
+        snap = services.stock_snapshot(u.shop)
+        if u.has_tech_access:
+            return Response(snap)
+        if u.role == User.ROLE_STOREKEEPER:
+            return Response({'raw': snap['raw'], 'products': []})
+        # Цех и продавец: только готовая продукция, без остатков сырья.
+        products = [{k: v for k, v in p.items() if k not in ('canProduce', 'bottleneckId')}
+                    for p in snap['products']]
+        return Response({'raw': [], 'products': products})
 
 
 class ReceiptView(APIView):
-    """POST /api/tech-cards/receipts/ — приход сырья на склад."""
-    permission_classes = [IsTechAdmin]
+    """POST /api/tech-cards/receipts/ — приход сырья на склад (складовщик)."""
+    permission_classes = [IsWarehouse]
 
     def post(self, request):
         ser = ReceiptSerializer(data=request.data)
@@ -146,8 +249,8 @@ class ReceiptView(APIView):
 
 
 class RunProductionView(APIView):
-    """POST /api/tech-cards/production/ — выпуск партии десерта."""
-    permission_classes = [IsTechAdmin]
+    """POST /api/tech-cards/production/ — проведение выпуска продукции (цех)."""
+    permission_classes = [IsProduction]
 
     def post(self, request):
         ser = RunProductionSerializer(data=request.data)
@@ -156,18 +259,21 @@ class RunProductionView(APIView):
         product = get_object_or_404(
             FinalProduct, pk=ser.validated_data['product_id'], shop=shop)
 
-        run = services.run_production(
+        run, negatives = services.run_production(
             shop=shop, product=product, quantity=ser.validated_data['quantity'])
 
         return Response({
             'run':   ProductionRunSerializer(run).data,
             'stock': services.stock_snapshot(shop),
+            # Позиции, ушедшие в минус: проведение не блокируем,
+            # но цех должен увидеть, чего фактически не хватило.
+            'negatives': negatives,
         }, status=201)
 
 
 class ProductionHistoryView(generics.ListAPIView):
-    """GET /api/tech-cards/production/history/ — журнал выпусков."""
-    permission_classes = [IsTechAdmin]
+    """GET /api/tech-cards/production/history/ — журнал выпусков (цех)."""
+    permission_classes = [IsProduction]
     serializer_class   = ProductionRunSerializer
 
     def get_queryset(self):
@@ -179,8 +285,8 @@ class ProductionHistoryView(generics.ListAPIView):
 # ── Накладные ─────────────────────────────────────────────
 
 class InvoiceListCreateView(APIView):
-    """GET / POST /api/tech-cards/invoices/ — архив продаж и проведение."""
-    permission_classes = [IsTechAdmin]
+    """GET / POST /api/tech-cards/invoices/ — архив продаж и проведение (продавец)."""
+    permission_classes = [IsSeller]
 
     def get(self, request):
         invoices = (Invoice.objects
@@ -207,8 +313,8 @@ class InvoiceListCreateView(APIView):
 
 
 class InvoiceDetailView(APIView):
-    """GET /api/tech-cards/invoices/{id}/ — состав накладной."""
-    permission_classes = [IsTechAdmin]
+    """GET /api/tech-cards/invoices/{id}/ — состав накладной (продавец)."""
+    permission_classes = [IsSeller]
 
     def get(self, request, pk):
         invoice = get_object_or_404(Invoice, pk=pk, shop=request.user.shop)

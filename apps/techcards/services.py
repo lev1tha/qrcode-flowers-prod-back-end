@@ -43,9 +43,11 @@ def stock_snapshot(shop):
     raw_bal = raw_balances(shop)
     prod_bal = product_balances(shop)
 
-    raws = list(RawIngredient.objects.filter(shop=shop))
+    # Удалённые позиции в срез не попадают, но их движения остаются
+    # в реестре: баланс истории от этого не меняется.
+    raws = list(RawIngredient.objects.filter(shop=shop).live())
     products = list(
-        FinalProduct.objects.filter(shop=shop)
+        FinalProduct.objects.filter(shop=shop).live()
         .prefetch_related('components__semi__ingredients__ingredient', 'components__raw')
     )
 
@@ -106,12 +108,22 @@ def receive_raw(shop, raw, quantity, unit=None, note=''):
 @transaction.atomic
 def run_production(shop, product, quantity):
     """
-    Выпуск `quantity` штук десерта: сырьё списывается по техкарте,
-    готовая продукция приходуется на склад.
+    Проведение документа «Выпуск продукции».
 
-    Блокируем строку магазина на время операции — иначе два
-    одновременных запуска увидят один и тот же остаток и уведут
-    склад в минус.
+    Цех вводит только товар и количество. Дальше всё считает бэкенд:
+      1. создаётся ProductionRun;
+      2. готовая продукция приходуется на склад (+quantity);
+      3. по техкарте считается потребность в сырье (расход × quantity);
+      4. сырьё списывается со склада;
+      5. себестоимость партии = сумма стоимости списанного сырья.
+
+    Нехватка сырья НЕ блокирует проведение — как «списание при отсутствии
+    остатков» в 1С. Цех не должен стоять из-за непроведённого прихода,
+    а расхождение закрывается инвентаризацией. Позиции, ушедшие в минус,
+    возвращаются отдельно, чтобы показать их ПОСЛЕ проведения.
+
+    Блокируем строку магазина: два одновременных выпуска иначе
+    прочитали бы один и тот же остаток.
     """
     if quantity is None or quantity <= 0:
         raise ValidationError({'quantity': 'Количество должно быть больше нуля'})
@@ -128,38 +140,41 @@ def run_production(shop, product, quantity):
     balances = raw_balances(shop)
     raws = {r.id: r for r in RawIngredient.objects.filter(id__in=usage.keys())}
 
-    # Сначала проверяем весь список, потом списываем: частично
-    # проведённое производство хуже, чем непроведённое.
-    shortages = []
+    movements, negatives, cost_total = [], [], 0.0
     for raw_id, per_unit in usage.items():
-        required = per_unit * quantity
-        available = balances.get(raw_id, 0.0)
-        if available + 1e-9 < required:
-            raw = raws.get(raw_id)
-            base_unit = costing.BASE_UNITS.get(raw.unit, '') if raw else ''
-            shortages.append(
-                f'{raw.name if raw else raw_id}: нужно {required:.2f} {base_unit}, '
-                f'есть {available:.2f} {base_unit}'
-            )
-    if shortages:
-        raise ValidationError({'detail': 'Не хватает сырья — ' + '; '.join(shortages)})
+        raw = raws.get(raw_id)
+        required  = per_unit * quantity
+        unit_cost = costing.raw_unit_cost(raw) if raw else 0.0
+        cost_total += required * unit_cost
 
-    unit_cost = costing.product_cost(product)
-    run = ProductionRun.objects.create(
-        shop=shop, product=product, quantity=quantity, unit_cost=unit_cost,
-    )
+        rest = balances.get(raw_id, 0.0) - required
+        if rest < -1e-9 and raw:
+            negatives.append({
+                'rawId':    raw_id,
+                'name':     raw.name,
+                'unit':     costing.BASE_UNITS.get(raw.unit, ''),
+                'required': round(required, 2),
+                'was':      round(balances.get(raw_id, 0.0), 2),
+                'rest':     round(rest, 2),
+            })
 
-    movements = [
-        StockMovement(
+        movements.append(StockMovement(
             shop=shop,
             kind=StockMovement.KIND_PRODUCTION_OUT,
             raw_id=raw_id,
-            quantity=-(per_unit * quantity),
-            unit_cost=costing.raw_unit_cost(raws[raw_id]) if raw_id in raws else 0,
-            run=run,
-        )
-        for raw_id, per_unit in usage.items()
-    ]
+            quantity=-required,
+            unit_cost=unit_cost,
+            run=None,           # проставим после создания документа
+        ))
+
+    # Себестоимость единицы — из фактически списанного сырья на партию.
+    unit_cost = cost_total / quantity if quantity else 0.0
+    run = ProductionRun.objects.create(
+        shop=shop, product=product, quantity=quantity, unit_cost=unit_cost,
+    )
+    for m in movements:
+        m.run = run
+
     movements.append(StockMovement(
         shop=shop,
         kind=StockMovement.KIND_PRODUCTION_IN,
@@ -169,7 +184,7 @@ def run_production(shop, product, quantity):
         run=run,
     ))
     StockMovement.objects.bulk_create(movements)
-    return run
+    return run, negatives
 
 
 # ── Себестоимость отгрузки ────────────────────────────────────

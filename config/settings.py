@@ -20,7 +20,6 @@ INSTALLED_APPS = [
     'corsheaders',
     'apps.accounts',
     'apps.cards',
-    'apps.superadmin',
     'apps.techcards',
 ]
 
@@ -101,9 +100,6 @@ SIMPLE_JWT = {
     'ROTATE_REFRESH_TOKENS':  True,
 }
 
-SUPERADMIN_LOGIN    = config('SUPERADMIN_LOGIN',    default='admin')
-SUPERADMIN_PASSWORD = config('SUPERADMIN_PASSWORD', default='qrcard2025')
-SUPERADMIN_TOKEN    = config('SUPERADMIN_TOKEN',    default='sa-secret-token')
 
 # ── За обратным прокси (nginx терминирует TLS) ────────────
 # nginx передаёт X-Forwarded-Proto=https → Django считает запрос защищённым.
